@@ -1,9 +1,8 @@
 import os
 import urllib.request
-import xml.etree.ElementTree as ET
 import json
+import feedparser  # Robust RSS parsing library
 
-# GitHub Actions will inject this variable securely
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 EE_KEYWORDS = [
@@ -15,15 +14,14 @@ EE_KEYWORDS = [
 def fetch_and_filter_papers():
     url = "https://arxiv.org"
     try:
-        response = urllib.request.urlopen(url)
-        xml_data = response.read()
-        root = ET.fromstring(xml_data)
+        # feedparser handles unescaped characters automatically
+        feed = feedparser.parse(url)
         
         filtered_papers = []
-        for item in root.findall('.//item'):
-            title = item.find('title').text
-            link = item.find('link').text
-            desc = item.find('description').text
+        for entry in feed.entries:
+            title = entry.get('title', '')
+            link = entry.get('link', '')
+            desc = entry.get('summary', entry.get('description', ''))
             
             search_text = (title + " " + desc).lower()
             if any(keyword in search_text for keyword in EE_KEYWORDS):
@@ -67,5 +65,7 @@ def send_to_discord(paper):
 
 if __name__ == "__main__":
     matched_papers = fetch_and_filter_papers()
+    if not matched_papers:
+        print("No papers matched your keywords today.")
     for paper in matched_papers:
         send_to_discord(paper)
