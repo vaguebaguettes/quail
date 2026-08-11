@@ -1,5 +1,8 @@
 name: Run Paper Suggestions Bot
 
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: '0 8 * * *'
@@ -26,3 +29,14 @@ jobs:
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: python send_papers.py
+
+    - name: Commit updated posted list
+      run: |
+        git config --global user.name "github-actions"
+        git config --global user.email "github-actions@github.com"
+    
+        git add posted.json
+    
+        git diff --cached --quiet || git commit -m "Update posted papers"
+    
+        git push
