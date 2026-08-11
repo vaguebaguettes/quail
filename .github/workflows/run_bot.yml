@@ -18,6 +18,10 @@ jobs:
       with:
         python-version: '3.11'
 
+    # Installs feedparser to safely handle messy RSS XML
+    - name: Install dependencies
+      run: pip install feedparser
+
     - name: Run Python script
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
