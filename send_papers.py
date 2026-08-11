@@ -1,9 +1,12 @@
 import os
 import urllib.request
 import json
-import feedparser  # Robust RSS parsing library
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+
+# arXiv allows querying directly via URL parameters
+# This queries the eess (Electrical Engineering) category for the last 5 entries
+API_URL = "https://arxiv.org"
 
 EE_KEYWORDS = [
     "power grid", "signal processing", "microelectronics", 
@@ -12,21 +15,28 @@ EE_KEYWORDS = [
 ]
 
 def fetch_and_filter_papers():
-    url = "https://arxiv.org"
     try:
-        # feedparser handles unescaped characters automatically
-        feed = feedparser.parse(url)
-        
-        filtered_papers = []
-        for entry in feed.entries:
-            title = entry.get('title', '')
-            link = entry.get('link', '')
-            desc = entry.get('summary', entry.get('description', ''))
+        # Requesting data as a plain text string
+        req = urllib.request.Request(API_URL, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            html_content = response.read().decode('utf-8')
             
-            search_text = (title + " " + desc).lower()
-            if any(keyword in search_text for keyword in EE_KEYWORDS):
-                truncated_desc = desc[:300] + "..." if len(desc) > 300 else desc
-                filtered_papers.append({"title": title, "link": link, "desc": truncated_desc})
+        filtered_papers = []
+        
+        # Simple structural parsing using string splits to completely bypass XML parsers
+        entries = html_content.split("<entry>")
+        for entry in entries[1:]:  # Skip the header metadata
+            try:
+                title = entry.split("<title>")[1].split("</title>")[0].strip()
+                link = entry.split('<link href="')[1].split('"')[0].strip()
+                desc = entry.split("<summary>")[1].split("</summary>")[0].strip()
+                
+                search_text = (title + " " + desc).lower()
+                if any(keyword in search_text for keyword in EE_KEYWORDS):
+                    truncated_desc = desc[:300] + "..." if len(desc) > 300 else desc
+                    filtered_papers.append({"title": title, "link": link, "desc": truncated_desc})
+            except IndexError:
+                continue # Skip malformed splits safely
                 
             if len(filtered_papers) >= 5:
                 break
