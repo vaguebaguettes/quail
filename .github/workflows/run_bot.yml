@@ -2,9 +2,8 @@ name: Run Paper Suggestions Bot
 
 on:
   schedule:
-    # Runs at 08:00 UTC every day (Adjust UTC to your preferred local time)
     - cron: '0 8 * * *'
-  workflow_dispatch: # This line lets you run the script manually whenever you want
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -17,10 +16,9 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-python-version: '3.11'
+        python-version: '3.11'
 
     - name: Run Python script
       env:
-        # Passes your secret webhook URL into the script safely
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: python send_papers.py
