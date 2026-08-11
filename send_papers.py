@@ -1,36 +1,44 @@
+```python
 import os
 import json
 import random
 import time
 import urllib.request
-import xml.etree.ElementTree as ET
+import urllib.error
+import feedparser
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-ARXIV_API = (
-    "https://export.arxiv.org/api/query?"
-    "search_query=cat:eess"
-    "&sortBy=submittedDate"
-    "&sortOrder=descending"
-    "&max_results=50"
-)
-
 POSTED_FILE = "posted.json"
 
-KEYWORDS = {
+# arXiv Electrical Engineering RSS feeds
+RSS_FEEDS = [
+    "https://rss.arxiv.org/rss/eess",
+    "https://rss.arxiv.org/rss/eess.SP",
+    "https://rss.arxiv.org/rss/eess.SY",
+    "https://rss.arxiv.org/rss/eess.ES",
+]
+
+KEYWORDS = [
     "power",
-    "grid",
+    "power electronics",
+    "power grid",
     "motor",
+    "motor control",
     "converter",
     "inverter",
     "battery",
     "embedded",
+    "embedded systems",
     "fpga",
+    "microcontroller",
+    "esp32",
     "semiconductor",
-    "signal",
+    "signal processing",
     "wireless",
     "antenna",
     "control",
+    "control systems",
     "robot",
     "robotics",
     "microelectronics",
@@ -39,85 +47,157 @@ KEYWORDS = {
     "photovoltaic",
     "solar",
     "circuit",
-    "microcontroller",
     "sensor",
     "communication",
     "machine learning",
-    "ai"
-}
+    "artificial intelligence",
+]
 
 
 def load_posted():
-    if os.path.exists(POSTED_FILE):
-        with open(POSTED_FILE, "r") as f:
+    """Load IDs of papers that have already been sent."""
+
+    if not os.path.exists(POSTED_FILE):
+        return set()
+
+    try:
+        with open(POSTED_FILE, "r", encoding="utf-8") as f:
             return set(json.load(f))
-    return set()
+    except (json.JSONDecodeError, OSError):
+        return set()
 
 
 def save_posted(posted):
-    with open(POSTED_FILE, "w") as f:
-        json.dump(list(posted), f, indent=2)
+    """Save posted paper IDs."""
+
+    with open(POSTED_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(posted), f, indent=2)
+
+
+def get_paper_id(entry):
+    """Get a unique ID for an arXiv paper."""
+
+    # feedparser normally gives us the arXiv URL as id/link
+    if hasattr(entry, "id") and entry.id:
+        return entry.id
+
+    if hasattr(entry, "link") and entry.link:
+        return entry.link
+
+    return None
 
 
 def fetch_papers():
-    req = urllib.request.Request(
-        ARXIV_API,
-        headers={"User-Agent": "ResearchPaperBot/1.0"}
-    )
-
-    with urllib.request.urlopen(req) as response:
-        xml_data = response.read()
-
-    root = ET.fromstring(xml_data)
-
-    ns = {
-        "atom": "http://www.w3.org/2005/Atom"
-    }
+    """Fetch recent papers from arXiv RSS feeds."""
 
     papers = []
+    seen_ids = set()
 
-    for entry in root.findall("atom:entry", ns):
+    for feed_url in RSS_FEEDS:
 
-        title = entry.find("atom:title", ns).text.strip()
+        print(f"Fetching: {feed_url}")
 
-        summary = entry.find("atom:summary", ns).text.strip()
+        try:
+            feed = feedparser.parse(feed_url)
 
-        paper_id = entry.find("atom:id", ns).text.strip()
+            if feed.bozo:
+                print(f"Warning: RSS feed had parsing issues: {feed.bozo_exception}")
 
-        published = entry.find("atom:published", ns).text[:10]
+            for entry in feed.entries:
 
-        authors = [
-            a.find("atom:name", ns).text
-            for a in entry.findall("atom:author", ns)
-        ]
+                paper_id = get_paper_id(entry)
 
-        search_text = (title + " " + summary).lower()
+                if not paper_id:
+                    continue
 
-        if not any(k in search_text for k in KEYWORDS):
-            continue
+                # Don't process the same paper twice
+                if paper_id in seen_ids:
+                    continue
 
-        papers.append({
-            "id": paper_id,
-            "title": title,
-            "summary": summary,
-            "authors": authors,
-            "published": published,
-            "url": paper_id
-        })
+                seen_ids.add(paper_id)
+
+                title = getattr(entry, "title", "").strip()
+                summary = getattr(entry, "summary", "").strip()
+                link = getattr(entry, "link", paper_id)
+
+                search_text = (
+                    title + " " + summary
+                ).lower()
+
+                # Check whether the paper matches our EE interests
+                matched_keywords = [
+                    keyword
+                    for keyword in KEYWORDS
+                    if keyword.lower() in search_text
+                ]
+
+                if not matched_keywords:
+                    continue
+
+                # RSS feeds may provide publication dates
+                published = getattr(
+                    entry,
+                    "published",
+                    "Unknown"
+                )
+
+                # Get authors if available
+                authors = []
+
+                if hasattr(entry, "authors"):
+                    authors = [
+                        author.name
+                        for author in entry.authors
+                        if hasattr(author, "name")
+                    ]
+
+                # Fallback for feeds that don't provide authors
+                if not authors:
+                    authors = ["Unknown"]
+
+                papers.append({
+                    "id": paper_id,
+                    "title": title,
+                    "summary": summary,
+                    "url": link,
+                    "published": published,
+                    "authors": authors,
+                    "keywords": matched_keywords,
+                })
+
+        except Exception as e:
+            print(f"Error reading {feed_url}: {e}")
+
+        # Small delay between feeds
+        time.sleep(2)
+
+    print(f"Found {len(papers)} matching papers.")
 
     return papers
 
 
 def send_to_discord(paper):
+    """Send one paper to Discord."""
 
-    if WEBHOOK_URL is None:
-        print("Missing DISCORD_WEBHOOK_URL")
+    if not WEBHOOK_URL:
+        print("ERROR: DISCORD_WEBHOOK_URL is missing!")
         return False
 
     description = paper["summary"]
 
+    # Discord embed description limit
     if len(description) > 350:
         description = description[:347] + "..."
+
+    authors = ", ".join(paper["authors"])
+
+    if len(authors) > 1024:
+        authors = authors[:1021] + "..."
+
+    keywords = ", ".join(paper["keywords"])
+
+    if len(keywords) > 1024:
+        keywords = keywords[:1021] + "..."
 
     payload = {
         "embeds": [
@@ -125,68 +205,116 @@ def send_to_discord(paper):
                 "title": paper["title"],
                 "url": paper["url"],
                 "description": description,
-                "color": 0x2ECC71,
+                "color": 0x5865F2,
                 "fields": [
                     {
                         "name": "Authors",
-                        "value": ", ".join(paper["authors"])[:1024],
+                        "value": authors,
                         "inline": False
                     },
                     {
                         "name": "Published",
                         "value": paper["published"],
                         "inline": True
+                    },
+                    {
+                        "name": "Topics",
+                        "value": keywords,
+                        "inline": True
                     }
                 ],
                 "footer": {
-                    "text": "Daily Electrical Engineering Paper"
+                    "text": "Daily Electrical Engineering Research"
                 }
             }
         ]
     }
 
-    req = urllib.request.Request(
+    request = urllib.request.Request(
         WEBHOOK_URL,
-        data=json.dumps(payload).encode(),
+        data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "User-Agent": "ResearchPaperBot/1.0"
+            "User-Agent": "Afiq-Research-Paper-Bot/1.0"
         },
         method="POST"
     )
 
     try:
-        with urllib.request.urlopen(req) as response:
-            if response.status == 204:
-                print("Sent:", paper["title"])
-                return True
-    except Exception as e:
-        print(e)
 
-    return False
+        with urllib.request.urlopen(request) as response:
+
+            if response.status == 204:
+                print(f"Successfully sent: {paper['title']}")
+                return True
+
+            print(f"Discord returned HTTP {response.status}")
+            return False
+
+    except urllib.error.HTTPError as e:
+
+        print(f"Discord HTTP error: {e.code}")
+
+        try:
+            print(e.read().decode())
+        except Exception:
+            pass
+
+        return False
+
+    except Exception as e:
+
+        print(f"Discord error: {e}")
+        return False
 
 
 def main():
 
+    print("===================================")
+    print(" Daily Electrical Engineering Bot")
+    print("===================================")
+
     posted = load_posted()
+
+    print(f"Previously posted papers: {len(posted)}")
 
     papers = fetch_papers()
 
+    # Only use papers we haven't sent before
     unseen = [
-        p for p in papers
-        if p["id"] not in posted
+        paper
+        for paper in papers
+        if paper["id"] not in posted
     ]
 
+    print(f"New unseen papers: {len(unseen)}")
+
     if not unseen:
-        print("No new matching papers.")
+        print("No new matching papers found today.")
         return
 
+    # Pick a random paper
     paper = random.choice(unseen)
 
+    print()
+    print("Selected paper:")
+    print(paper["title"])
+    print()
+
+    # Send to Discord
     if send_to_discord(paper):
+
         posted.add(paper["id"])
+
         save_posted(posted)
+
+        print("posted.json updated.")
+
+    else:
+
+        print("Paper was NOT added to posted.json.")
 
 
 if __name__ == "__main__":
     main()
+```
